@@ -804,8 +804,63 @@ POST& POST::add(const char *key, const char *value)
 }
 
 
+    static const size_t kEndTagLen=4;
+    static const uint8_t* searchHeadEnd(const uint8_t* buf,size_t size){
+        static const uint8_t* kEndTag=(const uint8_t*)"\r\n\r\n";
+        const uint8_t* bufEnd=buf+size;
+        const uint8_t* headEnd=std::search(buf,bufEnd,kEndTag,kEndTag+kEndTagLen);
+        return (headEnd!=bufEnd)?(headEnd+kEndTagLen):0;
+    }
+    struct TParseRanges{
+        TParseRanges():curRangeEnd(0),curRangeOutSize(0),curRangeSize(0){}
+        uint64_t                curRangeEnd;
+        size_t                  curRangeOutSize;
+        size_t                  curRangeSize;
+        std::vector<uint8_t>    cache;
+        const uint8_t* searchHeadEnd(size_t oldCacheSize,bool isCacheMustSearched)const{
+            size_t sz=cache.size();
+            size_t s0=(oldCacheSize>=(kEndTagLen-1))?(oldCacheSize-(kEndTagLen-1)):0;
+            size_t s1=(isCacheMustSearched)?sz:(oldCacheSize+(kEndTagLen-1));
+            s1=(s1<=sz)?s1:sz;
+            return minihttp::searchHeadEnd(cache.data()+s0,s1-s0);
+        }
+        static void readUInt64(uint64_t& v,const uint8_t*& begin,const uint8_t* end){
+            v=0;
+            const uint64_t kSafeV=((~(uint64_t)0)-9)/10;
+            while (begin<end){
+                unsigned int num=(*begin)-'0';
+                if (num<=9){
+                    assert(v<=kSafeV);
+                    v=v*10+num;
+                    ++begin;
+                }else{
+                    return;
+                }
+            }
+        }
+        void parse(const uint8_t* headBegin,const uint8_t* headEnd){
+            assert(curRangeOutSize==curRangeSize);
+            static const uint8_t* kRangeTag=(const uint8_t*)"Content-Range: bytes ";
+            static const size_t   kRangeTagLen=21;
+            const uint8_t*  cur=std::search(headBegin,headEnd,kRangeTag,kRangeTag+kRangeTagLen);
+            assert(cur!=headEnd);
+            cur+=kRangeTagLen;
+            TRange range;
+            readUInt64(range.first,cur,headEnd);
+            assert(*cur=='-');
+            cur+=1; // skip '-'
+            assert(range.first>=curRangeEnd);
+            readUInt64(range.second,cur,headEnd);
+            assert(range.second>=range.first);
+            curRangeEnd=range.second+1;
+            curRangeSize=curRangeEnd-range.first;
+            curRangeOutSize=0;
+        }
+    };
+    
 HttpSocket::HttpSocket()
 	: TcpSocket()
+    , _parseRanges(0)
 	, _keep_alive(0)
 	, _remaining(0)
 	, _status(0)
@@ -819,6 +874,7 @@ HttpSocket::HttpSocket()
 
 HttpSocket::~HttpSocket()
 {
+    if(_parseRanges) delete _parseRanges;
 }
 
 void HttpSocket::_OnOpen()
@@ -930,10 +986,21 @@ bool HttpSocket::SendRequest(Request& req, bool enqueue)
 
     if(_user_agent.length())
         r << "User-Agent: " << _user_agent << crlf;
-
+    
     if(_accept_encoding.length())
         r << "Accept-Encoding: " << _accept_encoding << crlf;
 
+    if (!_ranges.empty()){
+        r << "Range: bytes=";
+        for (size_t i=0; i<_ranges.size(); ++i){
+            if (_ranges[i].first!=~(uint64_t)0) r << _ranges[i].first;
+            r << "-";
+            if (_ranges[i].second!=~(uint64_t)0) r << _ranges[i].second;
+            if (i+1!=_ranges.size()) r << ",";
+        }
+        r << crlf;
+    }
+    
     if(post)
     {
         r << "Content-Length: " << req.post.length() << crlf;
@@ -1191,7 +1258,10 @@ bool HttpSocket::IsRedirecting() const
 bool HttpSocket::IsSuccess() const
 {
     const unsigned s = _status;
-    return s >= 200 && s <= 205;
+    if (!_ranges.empty()) //206 Partial Content success status
+        return s == 206;
+    else
+        return s >= 200 && s <=205;
 }
 
 
@@ -1280,10 +1350,66 @@ void HttpSocket::_OnClose()
         _FinishRequest();
 }
 
+void HttpSocket::_OnRecvRanges(void* _buf, unsigned int size){
+    if (this->_parseRanges==0) this->_parseRanges=new TParseRanges();
+    TParseRanges& _parseRanges=*this->_parseRanges;
+    const uint8_t* buf=(const uint8_t*)_buf;
+    
+    if (_parseRanges.curRangeOutSize<_parseRanges.curRangeSize){
+        assert(_parseRanges.cache.empty());
+        const size_t needOutSize=_parseRanges.curRangeSize-_parseRanges.curRangeOutSize;
+        unsigned int outSize=(size<=needOutSize)?size:(unsigned int)needOutSize;
+        _OnRecv((void*)buf,outSize);//out part
+        buf+=outSize;
+        size-=outSize;
+        _parseRanges.curRangeOutSize+=outSize;
+        if (size==0) return;
+    }
+    
+    const size_t oldCacheSize=_parseRanges.cache.size();
+    bool isCacheMustSearched=false;
+    const uint8_t* headEnd=searchHeadEnd(buf,size);
+    const uint8_t* headBegin=0;
+    if (headEnd!=0){ //found a head end
+        if (oldCacheSize>0){//must re-search the first head end
+            isCacheMustSearched=true;
+            _parseRanges.cache.insert(_parseRanges.cache.end(),buf,headEnd);
+        }else{
+            headBegin=buf;
+            buf=headEnd;
+            size-=(headEnd-headBegin);
+        }
+    }else{
+        _parseRanges.cache.insert(_parseRanges.cache.end(),buf,buf+size);
+        if (oldCacheSize==0)
+            return; //no head
+    }
+    if (headBegin==0){//search in cache
+        headEnd=_parseRanges.searchHeadEnd(oldCacheSize,isCacheMustSearched);
+        if (headEnd==0) return; //no head
+        size_t headSize=headEnd-_parseRanges.cache.data();
+        _parseRanges.cache.resize(headSize);
+        headBegin=_parseRanges.cache.data();
+        headEnd=headBegin+headSize;
+        buf+=(headSize-oldCacheSize);
+        size-=(headSize-oldCacheSize);
+    }
+    
+    //got range head
+    _parseRanges.parse(headBegin,headEnd);
+    _parseRanges.cache.clear();
+    if (size>0)
+        _OnRecvRanges((void*)buf,size);
+}
+
 void HttpSocket::_OnRecvInternal(void *buf, unsigned int size)
 {
-    if(IsSuccess() || _alwaysHandle)
-        _OnRecv(buf, size);
+    if(IsSuccess() || _alwaysHandle){
+        if (_ranges.size()>1)
+            _OnRecvRanges(buf,size);
+        else
+            _OnRecv(buf, size);
+    }
 }
 
 #endif

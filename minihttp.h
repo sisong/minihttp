@@ -167,6 +167,8 @@ struct Request
     POST post; // if this is empty, it's a GET request, otherwise a POST request
 };
 
+typedef std::pair<uint64_t,uint64_t> TRange;
+struct TParseRanges;
 class HttpSocket : public TcpSocket
 {
 public:
@@ -180,7 +182,8 @@ public:
     }
 
     void SetKeepAlive(unsigned int secs) { _keep_alive = secs; }
-    void SetUserAgent(const std::string &s) { _user_agent = s; }
+    void SetUserAgent(const std::string& s) { _user_agent = s; }
+    std::vector<TRange>& Ranges() { return _ranges; }
     void SetAcceptEncoding(const std::string& s) { _accept_encoding = s; }
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
     void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
@@ -225,11 +228,15 @@ protected:
     bool _HandleStatus(); // Returns whether the processed request was successful, or not
     void _FinishRequest();
     void _OnRecvInternal(void *buf, unsigned int size);
+    
+    void _OnRecvRanges(void *buf, unsigned int size);
 
     std::string _user_agent;
     std::string _accept_encoding; // Default empty.
     std::string _tmpHdr; // used to save the http header if the incoming buffer was not large enough
 
+    std::vector<TRange> _ranges;
+    TParseRanges* _parseRanges;
     unsigned int _keep_alive; // http related
     unsigned int _remaining; // http "Content-Length: X" - already recvd. 0 if ready for next packet.
                              // For chunked transfer encoding, this holds the remaining size of the current chunk
