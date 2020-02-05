@@ -174,11 +174,12 @@ inline std::string _GetErrorStr(int e)
 {
     std::string ret;
 #ifdef _WIN32
-    LPTSTR s;
-    ::FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0, (LPTSTR)&s, 0, NULL);
-    if(s)
-        ret = (const char*)s;
-    ::LocalFree(s);
+    const char* s=0;
+    ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0,&s, 0, NULL);
+    if(s){
+        ret=s;
+        ::LocalFree(s);
+    }
 #else
      const char *s = strerror(e);
      if(s)
@@ -803,6 +804,26 @@ POST& POST::add(const char *key, const char *value)
     return *this;
 }
 
+    static uint64_t safeReadUInt64(const uint8_t*& begin,const uint8_t* end){
+        const uint64_t kSafeV=((~(uint64_t)0)-9)/10;
+        uint64_t v=0;
+        while (begin<end){
+            unsigned int num=(*begin)-'0';
+            if (num<=9){
+                assert(v<=kSafeV);
+                v=v*10+num;
+                ++begin;
+            }else{
+                break;
+            }
+        }
+        return v;
+    }
+    inline static uint64_t safeStrToUInt64(const char* a){
+        if (a==0) return 0;
+        const uint8_t* begin=(const uint8_t*)a;
+        return safeReadUInt64(begin,begin+strlen(a));
+    }
 
     static const size_t kEndTagLen=4;
     static const uint8_t* searchHeadEnd(const uint8_t* buf,size_t size){
@@ -824,20 +845,6 @@ POST& POST::add(const char *key, const char *value)
             s1=(s1<=sz)?s1:sz;
             return minihttp::searchHeadEnd(cache.data()+s0,s1-s0);
         }
-        static void readUInt64(uint64_t& v,const uint8_t*& begin,const uint8_t* end){
-            v=0;
-            const uint64_t kSafeV=((~(uint64_t)0)-9)/10;
-            while (begin<end){
-                unsigned int num=(*begin)-'0';
-                if (num<=9){
-                    assert(v<=kSafeV);
-                    v=v*10+num;
-                    ++begin;
-                }else{
-                    return;
-                }
-            }
-        }
         void parse(const uint8_t* headBegin,const uint8_t* headEnd){
             assert(curRangeOutSize==curRangeSize);
             static const uint8_t* kRangeTag=(const uint8_t*)"Content-Range: bytes ";
@@ -846,11 +853,11 @@ POST& POST::add(const char *key, const char *value)
             assert(cur!=headEnd);
             cur+=kRangeTagLen;
             TRange range;
-            readUInt64(range.first,cur,headEnd);
+            range.first=safeReadUInt64(cur,headEnd);
             assert(*cur=='-');
             cur+=1; // skip '-'
             assert(range.first>=curRangeEnd);
-            readUInt64(range.second,cur,headEnd);
+            range.second=safeReadUInt64(cur,headEnd);
             assert(range.second>=range.first);
             curRangeEnd=range.second+1;
             curRangeSize=curRangeEnd-range.first;
@@ -991,6 +998,7 @@ bool HttpSocket::SendRequest(Request& req, bool enqueue)
         r << "Accept-Encoding: " << _accept_encoding << crlf;
 
     if (!_ranges.empty()){
+        if (_parseRanges) _parseRanges->cache.clear();
         r << "Range: bytes=";
         for (size_t i=0; i<_ranges.size(); ++i){
             if (_ranges[i].first!=~(uint64_t)0) r << _ranges[i].first;
@@ -1196,14 +1204,10 @@ const char *HttpSocket::Hdr(const char *h) const
     return it == _hdrs.end() ? NULL : it->second.c_str();
 }
 
-static int safeatoi(const char *s)
-{
-    return s ? atoi(s) : 0;
-}
 
 bool HttpSocket::_HandleStatus()
 {
-    _remaining = _contentLen = safeatoi(Hdr("content-length"));
+    _remaining = _contentLen = safeStrToUInt64(Hdr("content-length"));
 
     const char *encoding = Hdr("transfer-encoding");
     _chunkedTransfer = encoding && !STRNICMP(encoding, "chunked", 7);
@@ -1325,7 +1329,7 @@ void HttpSocket::_OnData(void)
         _remaining -= _recvSize;
         _OnRecvInternal(_readptr, _recvSize);
 
-        if(int(_remaining) < 0)
+        if(int64_t(_remaining) < 0)
         {
             traceprint("_OnRecv: _remaining wrap-around, huh??\n");
             _remaining = 0;

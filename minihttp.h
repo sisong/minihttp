@@ -193,10 +193,10 @@ public:
     bool SendRequest(const std::string& what, const char *extraRequest = NULL, void *user = NULL);
     bool QueueRequest(const std::string& what, const char *extraRequest = NULL, void *user = NULL);
 
-    unsigned int GetRemaining() const { return _remaining; }
+    uint64_t GetRemaining() const { return _remaining; }
 
     unsigned int GetStatusCode() const { return _status; }
-    unsigned int GetContentLen() const { return _contentLen; }
+    uint64_t GetContentLen() const { return _contentLen; }
     bool ChunkedTransfer() const { return _chunkedTransfer; }
     bool ExpectMoreData() const { return _remaining || _chunkedTransfer; }
 
@@ -238,9 +238,9 @@ protected:
     std::vector<TRange> _ranges;
     TParseRanges* _parseRanges;
     unsigned int _keep_alive; // http related
-    unsigned int _remaining; // http "Content-Length: X" - already recvd. 0 if ready for next packet.
+    uint64_t     _remaining; // http "Content-Length: X" - already recvd. 0 if ready for next packet.
                              // For chunked transfer encoding, this holds the remaining size of the current chunk
-    unsigned int _contentLen; // as reported by server
+    uint64_t     _contentLen; // as reported by server
     unsigned int _status; // http status code, HTTP_OK if things are good
 
     std::queue<Request> _requestQ;
