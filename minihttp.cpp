@@ -174,8 +174,8 @@ inline std::string _GetErrorStr(int e)
 {
     std::string ret;
 #ifdef _WIN32
-    const char* s=0;
-    ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0,&s, 0, NULL);
+    char* s=0;
+    ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0,(LPSTR)&s, 0, NULL);
     if(s){
         ret=s;
         ::LocalFree(s);
@@ -860,7 +860,7 @@ POST& POST::add(const char *key, const char *value)
             range.second=safeReadUInt64(cur,headEnd);
             assert(range.second>=range.first);
             curRangeEnd=range.second+1;
-            curRangeSize=curRangeEnd-range.first;
+            curRangeSize=(size_t)(curRangeEnd-range.first);
             curRangeOutSize=0;
         }
     };
