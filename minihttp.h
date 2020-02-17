@@ -198,6 +198,7 @@ public:
 
     unsigned int GetStatusCode() const { return _status; }
     uint64_t GetContentLen() const { return _contentLen; }
+    uint64_t GetRangsBytesLen() const { return _rangsBytesLen; }
     bool ChunkedTransfer() const { return _chunkedTransfer; }
     bool ExpectMoreData() const { return _remaining || _chunkedTransfer; }
 
@@ -242,6 +243,7 @@ protected:
     uint64_t     _remaining; // http "Content-Length: X" - already recvd. 0 if ready for next packet.
                              // For chunked transfer encoding, this holds the remaining size of the current chunk
     uint64_t     _contentLen; // as reported by server
+    uint64_t     _rangsBytesLen;
     unsigned int _status; // http status code, HTTP_OK if things are good
 
     std::queue<Request> _requestQ;

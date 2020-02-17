@@ -1208,6 +1208,9 @@ const char *HttpSocket::Hdr(const char *h) const
 bool HttpSocket::_HandleStatus()
 {
     _remaining = _contentLen = safeStrToUInt64(Hdr("content-length"));
+    const char* rangeStr=Hdr("content-range");
+    if (rangeStr) rangeStr=strstr(rangeStr,"/");
+    if (rangeStr&&(!_ranges.empty()))_rangsBytesLen=safeStrToUInt64(rangeStr+1);
 
     const char *encoding = Hdr("transfer-encoding");
     _chunkedTransfer = encoding && !STRNICMP(encoding, "chunked", 7);
@@ -1262,10 +1265,11 @@ bool HttpSocket::IsRedirecting() const
 bool HttpSocket::IsSuccess() const
 {
     const unsigned s = _status;
+    bool isBaseOk= (s >= 200) && (s <=205);
     if (!_ranges.empty()) //206 Partial Content success status
-        return s == 206;
+        return (s == 206)||((_contentLen==0) && isBaseOk);
     else
-        return s >= 200 && s <=205;
+        return isBaseOk;
 }
 
 
