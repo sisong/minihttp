@@ -170,6 +170,8 @@ struct Request
 
 typedef std::pair<uint64_t,uint64_t> TRange;
 struct TParseRanges;
+static const uint64_t kNullRangePos=~(uint64_t)0;
+
 class HttpSocket : public TcpSocket
 {
 public:
@@ -256,6 +258,7 @@ protected:
     bool _mustClose; // keep-alive specified, or not
     bool _followRedir; // Default true. Follow 3xx redirects if this is set.
     bool _alwaysHandle; // Also deliver to _OnRecv() if a non-success code was received.
+    bool _contentType_isMultiRanges;
 };
 
 } // end namespace minihttp

@@ -737,6 +737,7 @@ bool TcpSocket::update(void)
     if(bytes > 0) // we received something
     {
         _inbuf[bytes] = 0;
+        //printf("\n-------_readBytes-------{\n%s\n}-------_readBytes-------\n",_inbuf);
         _recvSize = bytes;
 
         // reset pointers for next read
@@ -826,31 +827,55 @@ POST& POST::add(const char *key, const char *value)
     }
 
     static const size_t kEndTagLen=4;
-    static const uint8_t* searchHeadEnd(const uint8_t* buf,size_t size){
+    static const uint8_t* searchHeadEnd(const uint8_t* buf,const uint8_t* bufEnd){
         static const uint8_t* kEndTag=(const uint8_t*)"\r\n\r\n";
-        const uint8_t* bufEnd=buf+size;
         const uint8_t* headEnd=std::search(buf,bufEnd,kEndTag,kEndTag+kEndTagLen);
         return (headEnd!=bufEnd)?(headEnd+kEndTagLen):0;
     }
     struct TParseRanges{
         TParseRanges():curRangeEnd(0),curRangeOutSize(0),curRangeSize(0){}
         uint64_t                curRangeEnd;
-        size_t                  curRangeOutSize;
-        size_t                  curRangeSize;
-        std::vector<uint8_t>    cache;
-        const uint8_t* searchHeadEnd(size_t oldCacheSize,bool isCacheMustSearched)const{
-            size_t sz=cache.size();
-            size_t s0=(oldCacheSize>=(kEndTagLen-1))?(oldCacheSize-(kEndTagLen-1)):0;
-            size_t s1=(isCacheMustSearched)?sz:(oldCacheSize+(kEndTagLen-1));
-            s1=(s1<=sz)?s1:sz;
-            return minihttp::searchHeadEnd(cache.data()+s0,s1-s0);
+        uint64_t                curRangeOutSize;
+        uint64_t                curRangeSize;
+        std::string             cache;
+        const uint8_t* searchHeadEndWithCache(const uint8_t* buf,const uint8_t* bufEnd){
+            const size_t _bufSize=bufEnd-buf;
+            const size_t cacheSize_bck=cache.size();
+            const size_t _insertSize=((kEndTagLen-1)<=_bufSize)?(kEndTagLen-1):_bufSize;
+            cache.insert(cache.end(),buf,buf+_insertSize);
+            const size_t _spos0=((kEndTagLen-1)<=cacheSize_bck)?cacheSize_bck-(kEndTagLen-1):0;
+            const uint8_t* searched=searchHeadEnd((uint8_t*)cache.data()+_spos0,(uint8_t*)cache.data()+cache.size());
+            if (searched==0){
+                cache.resize(cacheSize_bck);
+                searched=searchHeadEnd(buf,bufEnd);
+                if (searched==0) return 0;
+                cache.insert(cache.end(),buf,searched);
+            }else{
+                cache.resize(searched-(uint8_t*)cache.data());
+            }
+            return (uint8_t*)cache.data()+cache.size();
+        }
+
+        static bool _isBoundaryChars(const uint8_t* str,const uint8_t* strEnd){
+            while (str!=strEnd){
+                char c=*str++;
+                if ((c==' ')||(c=='\r')||(c=='\n')||(c=='-')||((c>='0')&&(c<='9'))||((c>='a')&&(c<='f'))||((c>='A')&&(c<='F')))
+                    continue;
+                else
+                    return false;
+            }
+            return true;
         }
         void parse(const uint8_t* headBegin,const uint8_t* headEnd){
             assert(curRangeOutSize==curRangeSize);
             static const uint8_t* kRangeTag=(const uint8_t*)"Content-Range: bytes ";
             static const size_t   kRangeTagLen=21;
             const uint8_t*  cur=std::search(headBegin,headEnd,kRangeTag,kRangeTag+kRangeTagLen);
-            assert(cur!=headEnd);
+            if (cur==headEnd){
+                assert(_isBoundaryChars(headBegin,headEnd));
+                return; //range boundary end
+            }
+            traceprint("parse range head: %s",std::string(headBegin,headEnd).c_str());
             cur+=kRangeTagLen;
             TRange range;
             range.first=safeReadUInt64(cur,headEnd);
@@ -860,7 +885,7 @@ POST& POST::add(const char *key, const char *value)
             range.second=safeReadUInt64(cur,headEnd);
             assert(range.second>=range.first);
             curRangeEnd=range.second+1;
-            curRangeSize=(size_t)(curRangeEnd-range.first);
+            curRangeSize=curRangeEnd-range.first;
             curRangeOutSize=0;
         }
     };
@@ -876,6 +901,7 @@ HttpSocket::HttpSocket()
 	, _mustClose(true)
 	, _followRedir(true)
 	, _alwaysHandle(false)
+    , _contentType_isMultiRanges(false)
 {
 }
 
@@ -925,8 +951,25 @@ bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= N
         req.host = _curRequest.host;
     if(req.port < 0)
         req.port = 80;
+    
+    if (!_ranges.empty()){
+        std::stringstream r;
+        const char *crlf = "\r\n";
+        if (_parseRanges) _parseRanges->cache.clear();
+        r << "Range: bytes=";
+        for (size_t i=0; i<_ranges.size(); ++i){
+            if (_ranges[i].first!=kNullRangePos) r << _ranges[i].first;
+            r << "-";
+            if (_ranges[i].second!=kNullRangePos) r << _ranges[i].second;
+            if (i+1!=_ranges.size()) r << ",";
+        }
+        r << crlf;
+        _ranges.clear();
+        req.extraGetHeaders = r.str();
+    }
     if(extraRequest)
-        req.extraGetHeaders = extraRequest;
+        req.extraGetHeaders += extraRequest;
+
     return SendRequest(req, false);
 }
 
@@ -997,18 +1040,6 @@ bool HttpSocket::SendRequest(Request& req, bool enqueue)
     if(_accept_encoding.length())
         r << "Accept-Encoding: " << _accept_encoding << crlf;
 
-    if (!_ranges.empty()){
-        if (_parseRanges) _parseRanges->cache.clear();
-        r << "Range: bytes=";
-        for (size_t i=0; i<_ranges.size(); ++i){
-            if (_ranges[i].first!=~(uint64_t)0) r << _ranges[i].first;
-            r << "-";
-            if (_ranges[i].second!=~(uint64_t)0) r << _ranges[i].second;
-            if (i+1!=_ranges.size()) r << ",";
-        }
-        r << crlf;
-    }
-    
     if(post)
     {
         r << "Content-Length: " << req.post.length() << crlf;
@@ -1099,6 +1130,7 @@ void HttpSocket::_FinishRequest(void)
             _OnRequestDone(); // notify about finished request
         _inProgress = false;
         _hdrs.clear();
+        _contentType_isMultiRanges=false;
         if(_mustClose)
             close();
     }
@@ -1169,6 +1201,8 @@ void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
 {
     // Key: Value data\r\n
 
+    static const char* _key_Content_Type="content-type"; //lowercase
+
     const char * const maxs = s + size;
     while(s < maxs)
     {
@@ -1193,6 +1227,8 @@ void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
         strToLower(key);
         std::string valstr(val, valEnd - val);
         _hdrs[key] = valstr;
+        if ((key==_key_Content_Type)&&(valstr.find("multipart/byteranges")!=std::string::npos))
+            _contentType_isMultiRanges=true;
         traceprint("HDR: %s: %s\n", key.c_str(), valstr.c_str());
         s = valEnd;
     }
@@ -1209,8 +1245,9 @@ bool HttpSocket::_HandleStatus()
 {
     _remaining = _contentLen = safeStrToUInt64(Hdr("content-length"));
     const char* rangeStr=Hdr("content-range");
+    _rangsBytesLen=0;
     if (rangeStr) rangeStr=strstr(rangeStr,"/");
-    if (rangeStr&&(!_ranges.empty()))_rangsBytesLen=safeStrToUInt64(rangeStr+1);
+    if (rangeStr) _rangsBytesLen=safeStrToUInt64(rangeStr+1);
 
     const char *encoding = Hdr("transfer-encoding");
     _chunkedTransfer = encoding && !STRNICMP(encoding, "chunked", 7);
@@ -1265,11 +1302,8 @@ bool HttpSocket::IsRedirecting() const
 bool HttpSocket::IsSuccess() const
 {
     const unsigned s = _status;
-    bool isBaseOk= (s >= 200) && (s <=205);
-    if (!_ranges.empty()) //206 Partial Content success status
-        return (s == 206)||((_contentLen==0) && isBaseOk);
-    else
-        return isBaseOk;
+    //add 206 Partial Content success status
+    return (s >= 200) && (s <=206);
 }
 
 
@@ -1361,59 +1395,54 @@ void HttpSocket::_OnClose()
 void HttpSocket::_OnRecvRanges(void* _buf, unsigned int size){
     if (this->_parseRanges==0) this->_parseRanges=new TParseRanges();
     TParseRanges& _parseRanges=*this->_parseRanges;
+    std::string& _cache=_parseRanges.cache;
     const uint8_t* buf=(const uint8_t*)_buf;
     
-    if (_parseRanges.curRangeOutSize<_parseRanges.curRangeSize){
-        assert(_parseRanges.cache.empty());
-        const size_t needOutSize=_parseRanges.curRangeSize-_parseRanges.curRangeOutSize;
-        unsigned int outSize=(size<=needOutSize)?size:(unsigned int)needOutSize;
-        _OnRecv((void*)buf,outSize);//out part
-        buf+=outSize;
-        size-=outSize;
-        _parseRanges.curRangeOutSize+=outSize;
-        if (size==0) return;
-    }
-    
-    const size_t oldCacheSize=_parseRanges.cache.size();
-    bool isCacheMustSearched=false;
-    const uint8_t* headEnd=searchHeadEnd(buf,size);
-    const uint8_t* headBegin=0;
-    if (headEnd!=0){ //found a head end
-        if (oldCacheSize>0){//must re-search the first head end
-            isCacheMustSearched=true;
-            _parseRanges.cache.insert(_parseRanges.cache.end(),buf,headEnd);
-        }else{
-            headBegin=buf;
-            buf=headEnd;
-            size-=(headEnd-headBegin);
+    while (size>0){
+        if (_parseRanges.curRangeOutSize<_parseRanges.curRangeSize){
+            assert(_parseRanges.cache.empty());
+            const uint64_t needOutSize=_parseRanges.curRangeSize-_parseRanges.curRangeOutSize;
+            unsigned int outSize=(size<=needOutSize)?size:(unsigned int)needOutSize;
+            traceprint("_OnRecvRanges: out range data %d\n",outSize);
+            _OnRecv((void*)buf,outSize);//out part
+            buf+=outSize;
+            size-=outSize;
+            _parseRanges.curRangeOutSize+=outSize;
+            if (size==0) return;
         }
-    }else{
-        _parseRanges.cache.insert(_parseRanges.cache.end(),buf,buf+size);
-        if (oldCacheSize==0)
-            return; //no head
+        assert(_parseRanges.curRangeOutSize==_parseRanges.curRangeSize);
+        
+        
+        const uint8_t* headBegin=0;
+        const uint8_t* headEnd=0;
+        const size_t _cacheSize_bck=_cache.size();
+        if (_cacheSize_bck>0){
+            headEnd=_parseRanges.searchHeadEndWithCache(buf,buf+size);
+            if (headEnd!=0) headBegin=(const uint8_t*)_cache.data();
+        }else{
+            headEnd=searchHeadEnd(buf,buf+size);
+            if (headEnd!=0) headBegin=buf;
+        }
+
+        if (headEnd!=0){
+            size_t _size=_cacheSize_bck+size-(headEnd-headBegin);
+            buf=buf+size-_size;
+            size=(unsigned int)_size;
+
+            _parseRanges.parse(headBegin,headEnd);
+            _cache.clear();
+        }else{
+            traceprint("_OnRecvRanges: wait range head end...\n");
+            _cache.insert(_cache.end(),buf,buf+size);
+            return;
+        }
     }
-    if (headBegin==0){//search in cache
-        headEnd=_parseRanges.searchHeadEnd(oldCacheSize,isCacheMustSearched);
-        if (headEnd==0) return; //no head
-        size_t headSize=headEnd-_parseRanges.cache.data();
-        _parseRanges.cache.resize(headSize);
-        headBegin=_parseRanges.cache.data();
-        headEnd=headBegin+headSize;
-        buf+=(headSize-oldCacheSize);
-        size-=(headSize-oldCacheSize);
-    }
-    
-    //got range head
-    _parseRanges.parse(headBegin,headEnd);
-    _parseRanges.cache.clear();
-    if (size>0)
-        _OnRecvRanges((void*)buf,size);
 }
 
 void HttpSocket::_OnRecvInternal(void *buf, unsigned int size)
 {
     if(IsSuccess() || _alwaysHandle){
-        if (_ranges.size()>1)
+        if (_contentType_isMultiRanges)
             _OnRecvRanges(buf,size);
         else
             _OnRecv(buf, size);
