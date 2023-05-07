@@ -102,7 +102,7 @@ struct SSLCtx
         mbedtls_ctr_drbg_free(&ctr_drbg);
         mbedtls_ssl_config_free(&conf);
     }
-    bool init()
+    bool init(const char* HOST_NAME)
     {
         const char *pers = "minihttp";
         const size_t perslen = strlen(pers);
@@ -136,6 +136,11 @@ struct SSLCtx
         if(err)
         {
             traceprint("SSLCtx::init(): mbedtls_ssl_init() returned %d\n", err);
+            return false;
+        }
+        err = mbedtls_ssl_set_hostname(&ssl,HOST_NAME);
+        if(err){
+            traceprint("SSLCtx::init(): mbedtls_ssl_set_hostname() returned %d\n", err);
             return false;
         }
 
@@ -552,7 +557,7 @@ void TcpSocket::shutdownSSL()
     _sslctx = NULL;
 }
 
-bool TcpSocket::initSSL(const char *certs)
+bool TcpSocket::initSSL(const char *certs,const char* HOST_NAME)
 {
     SSLCtx *ctx = (SSLCtx*)_sslctx;
     if(ctx)
@@ -561,7 +566,7 @@ bool TcpSocket::initSSL(const char *certs)
     {
         ctx = new SSLCtx();
         _sslctx = ctx;
-        if(!ctx->init())
+        if(!ctx->init(HOST_NAME))
         {
             shutdownSSL();
             return false;
@@ -1106,7 +1111,7 @@ bool HttpSocket::_OpenRequest(const Request& req)
     if(req.useSSL && !hasSSL())
     {
         traceprint("HttpSocket::_OpenRequest(): Is an SSL connection, but SSL was not inited, doing that now\n");
-        if(!initSSL(NULL)) // FIXME: supply cert list?
+        if(!initSSL(NULL,req.host.c_str())) // FIXME: supply cert list?
         {
             traceprint("FAILED to init SSL\n");
             return false;

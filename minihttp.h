@@ -77,7 +77,7 @@ public:
     bool SendBytes(const void *buf, unsigned int len);
 
     // SSL related
-    bool initSSL(const char *certs);
+    bool initSSL(const char *certs,const char* HOST_NAME);
     bool hasSSL() const { return !!_sslctx; }
     void shutdownSSL();
     SSLResult verifySSL(char *buf = 0, unsigned buflen = 0); // optionally put info string into buf
