@@ -632,7 +632,7 @@ SSLResult TcpSocket::verifySSL(char *buf, unsigned bufsize)
 }
 #else // MINIHTTP_USE_MBEDTLS
 void TcpSocket::shutdownSSL() {}
-bool TcpSocket::initSSL(const char *certs)
+bool TcpSocket::initSSL(const char *certs,const char* HOST_NAME)
 {
     traceprint("initSSL: Compiled without SSL support!\n");
     return false;
