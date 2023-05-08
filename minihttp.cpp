@@ -135,13 +135,15 @@ struct SSLCtx
         err = mbedtls_ssl_setup(&ssl, &conf);
         if(err)
         {
-            traceprint("SSLCtx::init(): mbedtls_ssl_init() returned %d\n", err);
+            traceprint("SSLCtx::init(): mbedtls_ssl_setup() returned %d\n", err);
             return false;
         }
-        err = mbedtls_ssl_set_hostname(&ssl,HOST_NAME);
-        if(err){
-            traceprint("SSLCtx::init(): mbedtls_ssl_set_hostname() returned %d\n", err);
-            return false;
+        if ((HOST_NAME!=0)&&(strlen(HOST_NAME)>0)){
+            err = mbedtls_ssl_set_hostname(&ssl,HOST_NAME);
+            if(err){
+                traceprint("SSLCtx::init(): mbedtls_ssl_set_hostname() returned %d\n", err);
+                //continue true
+            }
         }
 
         return true;
