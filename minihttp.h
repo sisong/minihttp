@@ -246,6 +246,7 @@ protected:
                              // For chunked transfer encoding, this holds the remaining size of the current chunk
     uint64_t     _contentLen; // as reported by server
     uint64_t     _rangsBytesLen;
+    uint64_t     _rangs_sended_pos; //last unknown size of the range sent to the server
     unsigned int _status; // http status code, HTTP_OK if things are good
 
     std::queue<Request> _requestQ;

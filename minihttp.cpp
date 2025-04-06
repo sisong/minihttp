@@ -951,6 +951,7 @@ bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= N
 {
     Request req;
     req.user = user;
+    _rangs_sended_pos=kNullRangePos;
     if(post)
         req.post = *post;
     SplitURI(url, req.protocol, req.host, req.resource, req.port, req.useSSL);
@@ -965,9 +966,14 @@ bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= N
         if (_parseRanges) _parseRanges->cache.clear();
         r << "Range: bytes=";
         for (size_t i=0; i<_ranges.size(); ++i){
-            if (_ranges[i].first!=kNullRangePos) r << _ranges[i].first;
+            if (_ranges[i].first!=kNullRangePos) { 
+                r << _ranges[i].first; 
+                if (_ranges[i].second==kNullRangePos)
+                    _rangs_sended_pos=_ranges[i].first; 
+            }
             r << "-";
-            if (_ranges[i].second!=kNullRangePos) r << _ranges[i].second;
+            if (_ranges[i].second!=kNullRangePos)
+                r << _ranges[i].second;
             if (i+1!=_ranges.size()) r << ",";
         }
         r << crlf;
@@ -1263,13 +1269,19 @@ bool HttpSocket::_HandleStatus()
     _mustClose = !conn || STRNICMP(conn, "keep-alive", 10);
 
     // As per the spec, we also need to handle 1xx codes, but are free to ignore them
-    const bool success = IsSuccess() || (_status >= 100 && _status <= 199);
+    bool success = IsSuccess() || (_status >= 100 && _status <= 199);
 
     if(!(_chunkedTransfer || _contentLen) && success)
         traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail\n");
 
     traceprint("Got HTTP Status %d\n", _status);
 
+    if ((_status==416)&&(_rangs_sended_pos==_rangsBytesLen)){//all data is already received
+        _status=200;
+        success=true;
+        close();
+    }
+    
     if(success)
         return true;
 
