@@ -90,6 +90,7 @@ protected:
     virtual void _OnClose() {}; // close callback
     virtual void _OnOpen() {} // called when opened
     virtual bool _OnUpdate() { return true; } // called before reading from the socket
+    virtual void _OnReadError() {}
 
     void _ShiftBuffer();
 

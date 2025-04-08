@@ -784,6 +784,7 @@ bool TcpSocket::update(void)
         case WSAECONNABORTED:
         case WSAESHUTDOWN:
 #endif
+            _OnReadError();
             close();
             break;
         }
